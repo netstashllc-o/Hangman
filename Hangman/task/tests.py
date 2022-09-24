@@ -1,3 +1,4 @@
+import re
 from typing import List
 
 from hstest import StageTest, dynamic_test, TestedProgram, WrongAnswer, CheckResult
@@ -117,6 +118,7 @@ class Config:
     REOPEN_LETTER_MESSAGE = 'You\'ve already guessed this letter'
     MORE_THAN_ONE_LETTER_MESSAGE = 'Please, input a single letter'
     NON_ASCII_LETTER_MESSAGE = 'Please, enter a lowercase letter from the English alphabet'
+    GAME_MENU_TEXT = 'Type "play" to play the game, "results" to show the scoreboard, and "exit" to quit'
 
     @staticmethod
     def languages():
@@ -285,14 +287,14 @@ class ValidationHelper:
         message = Config.REOPEN_LETTER_MESSAGE
 
         if message.lower() not in output.lower():
-            raise OutputNotContainsReopenLetterMessageError()
+            raise OutputNotContainsReopenLetterMessageError
 
     @classmethod
     def output_should_not_contains_reopen_letter_message(cls, output: str):
         message = Config.REOPEN_LETTER_MESSAGE
 
         if message.lower() in output.lower():
-            raise OutputContainsReopenLetterMessageError()
+            raise OutputContainsReopenLetterMessageError
 
     @classmethod
     def output_should_contains_incorrect_letter_message(cls, output: str):
@@ -389,12 +391,12 @@ class ValidationHelper:
             raise InitialMaskContainsInvalidCharactersError()
 
 
-class FirstBlockLanguageMaskParser:
+class LanguageMaskParser:
 
     def __init__(self, output: str):
         self.output = output
         self.helper = ValidationHelper()
-        self.mask_line = 3
+        self.mask_line = 1
         self.lines = []
         self.mask = ''
 
@@ -410,7 +412,7 @@ class FirstBlockLanguageMaskParser:
             raise WrongAnswer("The output doesn't contain any \"Input a letter\" lines.")
         except WrongLinesCountError:
             raise WrongAnswer(f"Cannot recognize a word from the mask. The mask should be on {self.mask_line} "
-                              f"line but there are less than {self.mask_line} lines in the first block.")
+                              f"line but there are less than {self.mask_line} lines in the output.")
         except InitialMaskContainsInvalidCharactersError:
             raise WrongAnswer(f"Cannot recognize a word from the mask. "
                               f"The mask \"{self.mask}\" contains non-dash characters.")
@@ -454,7 +456,7 @@ class GameCommand:
         except OutputNotContainsInputAnnouncementError:
             raise WrongAnswer("The output doesn't contain any \"Input a letter\" lines.")
         except OutputContainsInputAnnouncementError:
-            raise WrongAnswer(f"The last block should not contain text \"{Config.INPUT_ANNOUNCEMENT}\"")
+            raise WrongAnswer(f"The last block should not contain text \"{Config.INPUT_ANNOUNCEMENT}\".")
         except OutputContainsIncorrectLetterMessageError:
             raise WrongAnswer(f"The output contains \"{Config.INCORRECT_LETTER_MESSAGE}\" message, "
                               f"but a letter \"{self.state.current_input}\" "
@@ -476,10 +478,11 @@ class GameCommand:
         except OutputContainsSurvivedMessageError:
             raise WrongAnswer(f'The user survived, but there are {self.state.letters_to_open} letters to open.')
         except OutputNotContainsSurvivedMessageError:
-            raise WrongAnswer(f'The user survived, but there is no \"{Config.SURVIVED_MESSAGE}\" message in the output.')
+            raise WrongAnswer(
+                f'The user survived, but there is no \"{Config.SURVIVED_MESSAGE}\" message in the output.')
         except OutputNotContainsGuessedWordMessageError:
             raise WrongAnswer(
-                f'The user survived. The last block should contain text \"{self.state.guessed_word_message}\".')
+                f'The user survived. The last block should contain text \"{self.state.guessed_word_message}\"')
         except OutputContainsGuessedWordMessageError:
             raise WrongAnswer(
                 f'The user is hanged. The last block should not contain text \"{Config.GUESSED_THE_WORD_MESSAGE}\".'
@@ -518,8 +521,6 @@ class GameCommand:
         for line in lines:
             if line.strip() == self.state.current_language_mask:
                 return
-        if self.state.tries != 0 and 'you lost' in line.lower():
-            raise WrongAnswer('Please, make sure that the tries are counted correctly.')
 
         raise IncorrectMaskTransitionError
 
@@ -662,6 +663,45 @@ class TestCommandsCollection:
         return commands
 
 
+class GameMenu:
+
+    def __init__(self, program: TestedProgram):
+        self.program = program
+
+    def play(self) -> str:
+        return self.program.execute('play')
+
+    def exit(self):
+        self.program.execute('exit')
+
+    def scoreboard(self):
+        return self.program.execute('results')
+
+    @classmethod
+    def output_should_contains_menu(cls, output: str):
+        if Config.GAME_MENU_TEXT not in output.strip():
+            raise WrongAnswer(
+                f'The output doesn\'t contain game menu text: \"{Config.GAME_MENU_TEXT}\". Please, make sure that you '
+                f'output the text exactly as in the example task.')
+
+
+class Scoreboard:
+
+    @staticmethod
+    def output_should_contains_scoreboard(wins: int, loses: int, output: str):
+        wins_text = f'You won: {wins} times'
+        loses_text = f'You lost: {loses} times'
+        scoreboard = re.sub(" +", " ", output.strip())
+
+        if wins_text not in scoreboard:
+            raise WrongAnswer(f'Invalid scoreboard. The output should contain: \"{wins_text}\". Please, check the '
+                              f'correctness of the output of wins.')
+
+        if loses_text not in scoreboard:
+            raise WrongAnswer(f'Invalid scoreboard. The output should contain: \"{loses_text}\". Please, check the '
+                              f'correctness of the output of loses.')
+
+
 class HangmanTest(StageTest):
 
     def __init__(self, source_name: str = ''):
@@ -670,14 +710,105 @@ class HangmanTest(StageTest):
         self.survived_history = {language: False for language in Config.languages()}
         self.hanged_history = {language: False for language in Config.languages()}
 
-    @dynamic_test(order=1, repeat=100)
+    @dynamic_test(order=1)
+    def test_should_print_game_menu(self):
+        pr = TestedProgram(self.source_name)
+        game_menu = GameMenu(pr)
+        first_block = pr.start().strip()
+        game_menu.output_should_contains_menu(first_block)
+
+        return CheckResult.correct()
+
+    @dynamic_test(order=2)
+    def test_should_can_replay_game(self):
+        pr = TestedProgram(self.source_name)
+        game_menu = GameMenu(pr)
+        first_block = pr.start().strip()
+        game_menu.output_should_contains_menu(first_block)
+
+        parser = LanguageMaskParser(game_menu.play())
+        language = parser.parse()
+
+        game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
+        commands = TestCommandsCollection.survived()
+        self._run_commands(commands, game_state)
+
+        game_menu.output_should_contains_menu(game_state.output)
+        parser = LanguageMaskParser(game_menu.play())
+        language = parser.parse()
+
+        game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
+        commands = TestCommandsCollection.survived()
+        self._run_commands(commands, game_state)
+        game_menu.exit()
+
+        return CheckResult.correct()
+
+    @dynamic_test(order=3)
+    def test_should_quit_after_exit_command(self):
+        pr = TestedProgram(self.source_name)
+        game_menu = GameMenu(pr)
+        first_block = pr.start().strip()
+        game_menu.output_should_contains_menu(first_block)
+
+        parser = LanguageMaskParser(game_menu.play())
+        language = parser.parse()
+        game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
+        commands = TestCommandsCollection.survived()
+        self._run_commands(commands, game_state)
+        game_menu.output_should_contains_menu(game_state.output)
+        game_menu.exit()
+
+        if not pr.is_finished():
+            raise WrongAnswer(f'The program should be terminated after \"exit\" command.')
+
+        return CheckResult.correct()
+
+    @dynamic_test(order=4)
+    def test_game_should_output_correct_scoreboard(self):
+        wins = 0
+        loses = 0
+        pr = TestedProgram(self.source_name)
+        game_menu = GameMenu(pr)
+        first_block = pr.start().strip()
+        game_menu.output_should_contains_menu(first_block)
+        Scoreboard.output_should_contains_scoreboard(wins=wins, loses=loses, output=game_menu.scoreboard())
+
+        parser = LanguageMaskParser(game_menu.play())
+        language = parser.parse()
+        game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
+        commands = TestCommandsCollection.survived()
+        self._run_commands(commands, game_state)
+        wins += 1
+
+        game_menu.output_should_contains_menu(game_state.output)
+        Scoreboard.output_should_contains_scoreboard(wins=wins, loses=loses, output=game_menu.scoreboard())
+
+        parser = LanguageMaskParser(game_menu.play())
+        language = parser.parse()
+        game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
+        commands = TestCommandsCollection.hanged()
+        self._run_commands(commands, game_state)
+        loses += 1
+
+        game_menu.output_should_contains_menu(game_state.output)
+        Scoreboard.output_should_contains_scoreboard(wins=wins, loses=loses, output=game_menu.scoreboard())
+
+        game_menu.exit()
+
+        return CheckResult.correct()
+
+    @dynamic_test(order=5, repeat=100)
     def test_all_languages_from_description_should_can_be_guessed(self):
         if self._all_languages_from_description_was_guessed_at_least_once():
             return CheckResult.correct()
 
         pr = TestedProgram(self.source_name)
+        game_menu = GameMenu(pr)
         first_block = pr.start().strip()
-        parser = FirstBlockLanguageMaskParser(first_block)
+        game_menu.output_should_contains_menu(first_block)
+
+        parser = LanguageMaskParser(game_menu.play())
         language = parser.parse()
         game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
         commands = TestCommandsCollection.survived()
@@ -686,7 +817,7 @@ class HangmanTest(StageTest):
 
         return CheckResult.correct()
 
-    @dynamic_test(order=2)
+    @dynamic_test(order=6)
     def test_all_languages_from_description_should_be_guessed_at_least_once(self):
         if self._all_languages_from_description_was_guessed_at_least_once():
             return CheckResult.correct()
@@ -694,15 +825,19 @@ class HangmanTest(StageTest):
         raise WrongAnswer("It looks like your program is not using "
                           "all of the words to guess from the list in the description.")
 
-    @dynamic_test(order=3, repeat=100)
+    @dynamic_test(order=7, repeat=100)
     def test_all_languages_from_description_should_be_incorrect_at_least_once(self):
         if self._all_languages_from_description_was_incorrect_at_least_once():
             return CheckResult.correct()
 
         pr = TestedProgram(self.source_name)
+        game_menu = GameMenu(pr)
         first_block = pr.start().strip()
-        parser = FirstBlockLanguageMaskParser(first_block)
+        game_menu.output_should_contains_menu(first_block)
+
+        parser = LanguageMaskParser(game_menu.play())
         language = parser.parse()
+
         game_state = GameState(program=pr, language=language, tries=Config.MAX_TRIES)
         commands = TestCommandsCollection.hanged()
         self._run_commands(commands, game_state)
